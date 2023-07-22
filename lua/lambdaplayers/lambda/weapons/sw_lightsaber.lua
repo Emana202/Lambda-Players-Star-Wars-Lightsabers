@@ -7,6 +7,9 @@ local Rand = math.Rand
 local Clamp = math.Clamp
 local ceil = math.ceil
 local min = math.min
+local ents_Create = ents.Create
+local coroutine_yield = coroutine.yield
+local coroutine_wait = coroutine.wait
 local ipairs = ipairs
 local CurTime = CurTime
 local string_match = string.match
@@ -35,6 +38,9 @@ local forceTrTbl = {
     maxs = Vector( 16, 16, 72 )
 }
 local lsModels
+local cleanuptime = GetConVar( "lambdaplayers_lambda_serversideragdollcleanuptime" )
+local cleaneffect = GetConVar( "lambdaplayers_lambda_serversideragdollcleanupeffect" )
+local dropEnt = CreateLambdaConvar( "lambdaplayers_weapons_lightsaber_dropentity", 0, true, false, false, "If Lambda Players with lightsaber should drop an lightsaber entity instead of a clientside prop on death.", 0, 1, { type = "Bool", name = "Lightsaber - Drop Working Entity", category = "Weapon Utilities" } )
 
 local function GetSaberPosAng( self, wepent, num, side )
     local attachment = wepent:LookupAttachment( ( side and "quillon" or "blade" ) .. ( num or 1 ) )
@@ -323,6 +329,10 @@ table.Merge( _LAMBDAPLAYERSWEAPONS, {
             if wepent.LS_SoundHit then wepent.LS_SoundHit:Stop() end
             if wepent.LS_SoundLoop then wepent.LS_SoundLoop:Stop() end
             if wepent.LS_SoundSwing then wepent.LS_SoundSwing:Stop() end
+        end,
+
+        OnDrop = function( self, wepent, cs_prop )
+            if dropEnt:GetBool() then cs_prop:Remove() end
         end,
 
         OnTakeDamage = function( self, wepent, dmginfo )
@@ -665,7 +675,7 @@ table.Merge( _LAMBDAPLAYERSWEAPONS, {
             return true
         end, 
 
-        OnDeath = function( self )
+        OnDeath = function( self, wepent, dmginfo )
             self.LS_DmgAbsorbTime = 0
             self.LS_Force = 100
             self.LS_CurrentForce = false
@@ -677,7 +687,57 @@ table.Merge( _LAMBDAPLAYERSWEAPONS, {
             self.LS_RecentDmgResetTime = CurTime()
             self.LS_ForceRepulse = false
 
+            local lengthAnim = self:GetNW2Float( "LS_LengthAnimation", 0 )
             self:SetNW2Float( "LS_LengthAnimation", 0 )
+
+            local lsEnt = self.LS_DroppedSaber
+            if IsValid( lsEnt ) then lsEnt:Remove() end
+
+            if !dropEnt:GetBool() then return end
+            lsEnt = ents_Create( "ent_lightsaber" )
+
+            if !IsValid( lsEnt ) then return end
+            lsEnt:SetModel( self.LS_WorldModel )
+            lsEnt:SetPos( wepent:GetPos() )
+            lsEnt:SetAngles( wepent:GetAngles() )
+            lsEnt:SetOwner( self )
+            lsEnt:Spawn()
+            lsEnt:SetCollisionGroup( COLLISION_GROUP_WEAPON )
+            
+            self:DeleteOnRemove( lsEnt )
+            self.LS_DroppedSaber = lsEnt
+
+            local phys = lsEnt:GetPhysicsObject()
+            if IsValid( phys ) then
+                phys:ApplyForceOffset( dmginfo:GetDamageForce() / 5, dmginfo:GetDamagePosition() )
+            end
+
+            lsEnt:SetLengthAnimation( lengthAnim )
+            lsEnt:SetBladeWidth( self.LS_MaxWidth )
+            lsEnt:SetMaxLength( self.LS_MaxLength )
+            lsEnt:SetDarkInner( self.LS_DarkInner )
+            lsEnt:SetCrystalColor( self:GetPhysColor() )
+
+            lsEnt:SetEnabled( !self.LS_IsHolstered )
+            lsEnt:StopSound( self.LS_SwitchSound )
+
+            local startTime = CurTime()
+            LambdaCreateThread( function()
+                while ( cleanuptime:GetInt() == 0 or CurTime() < ( startTime + cleanuptime:GetInt() ) or IsValid( self ) and !self:Alive() and self:IsSpeaking() ) do 
+                    if !IsValid( lsEnt ) then return end
+                    coroutine_yield() 
+                end
+                if !IsValid( lsEnt ) then return end
+
+                if cleaneffect:GetBool() then 
+                    lsEnt:SetEnabled( false )
+                    lsEnt:LambdaDisintegrate() 
+                    coroutine.wait( 5 )
+                end 
+
+                if !IsValid( lsEnt ) then return end
+                lsEnt:Remove()
+            end ) 
         end,
 
         OnDealDamage = function( self, wepent, target, info, tookDamage, killed )
