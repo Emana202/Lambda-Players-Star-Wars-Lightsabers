@@ -24,6 +24,8 @@ local ents_GetAll = ents.GetAll
 local string_StartWith = string.StartWith
 local string_find = string.find
 local Entity = Entity
+local IsValidRagdoll = util.IsValidRagdoll
+local FindInSphere = ents.FindInSphere
 local SortedPairsByValue = SortedPairsByValue
 local targetTrTbl = {}
 local bladeTrTbl = { filter = {} }
@@ -66,7 +68,7 @@ local function GetSaberPosAng( self, wepent, num, side )
     return defPos, -defAng:Forward()
 end
 
-local function SelectTargets( self, num )
+local function SelectTargets( self, wepent, num )
     local eyeAttach = self:GetAttachmentPoint( "eyes" )
     local pos1 = ( eyeAttach.Pos + eyeAttach.Ang:Forward() * 512 )
 
@@ -75,7 +77,7 @@ local function SelectTargets( self, num )
 
     local foundEnts = {}
     for _, ent in ipairs( ents_GetAll() ) do
-        if ent == self or ent:EntIndex() <= 0 or ent:Health() < 1 or ( ent:IsNPC() or ent:IsPlayer() or ent:IsNextBot() ) and !self:CanTarget( ent ) then continue end
+        if ent == self or ent == wepent or !IsValid( ent ) or ent:Health() < 1 or ( ent:IsNPC() or ent:IsPlayer() or ent:IsNextBot() ) and !self:CanTarget( ent ) then continue end
 
         local mdl = ent:GetModel()
         if !mdl or mdl == "" or string_StartWith( mdl, "models/gibs/" ) or string_find( mdl, "chunk" ) or string_find( mdl, "_shard" ) or string_find( mdl, "_splinters" ) then continue end
@@ -105,8 +107,9 @@ local ForcePowers = {
     [ "Force Leap" ] = {
         Cost = 10,
         Cooldown = 0.5,
+        ConVar = CreateLambdaConvar( "lambdaplayers_weapons_lightsaber_allowleap", 1, true, false, false, "If Lambda Players with lightsaber are allowed to use the Force Leap power.", 0, 1, { type = "Bool", name = "Lightsaber - Allow Force Leap", category = "Weapon Utilities" } ),
         Action = function( self, wepent, target )
-            if !self:IsOnGround() then return false end
+            if !self:IsOnGround() or !IsValid( target ) then return false end
             local selfPos = self:GetPos()
             local jumpVel = ( vector_up * 512 + ( target:GetPos() - selfPos ):GetNormalized() * 512 )            
 
@@ -124,6 +127,7 @@ local ForcePowers = {
     [ "Force Absorb" ] = {
         Cost = 0.1,
         Cooldown = 0.3,
+        ConVar = CreateLambdaConvar( "lambdaplayers_weapons_lightsaber_allowabsorb", 1, true, false, false, "If Lambda Players with lightsaber are allowed to use the Force Absorb power.", 0, 1, { type = "Bool", name = "Lightsaber - Allow Force Absorb", category = "Weapon Utilities" } ),
         Action = function( self )
             self.LS_DmgAbsorbTime = ( CurTime() + 0.1 )
         end,
@@ -131,6 +135,7 @@ local ForcePowers = {
     [ "Force Heal" ] = {
         Cost = 1,
         Cooldown = 0.2,
+        ConVar = CreateLambdaConvar( "lambdaplayers_weapons_lightsaber_allowheal", 1, true, false, false, "If Lambda Players with lightsaber are allowed to use the Force Heal power.", 0, 1, { type = "Bool", name = "Lightsaber - Allow Force Heal", category = "Weapon Utilities" } ),
         Action = function( self )
             local hp = self:Health()
             if hp >= self:GetMaxHealth() then return false end
@@ -144,8 +149,9 @@ local ForcePowers = {
         end
     },
     [ "Force Combust" ] = {
-        Action = function( self )
-            local ent = SelectTargets( self, 1 )
+        ConVar = CreateLambdaConvar( "lambdaplayers_weapons_lightsaber_allowcombust", 1, true, false, false, "If Lambda Players with lightsaber are allowed to use the Force Combust power.", 0, 1, { type = "Bool", name = "Lightsaber - Allow Force Combust", category = "Weapon Utilities" } ),
+        Action = function( self, wepent )
+            local ent = SelectTargets( self, wepent, 1 )
             if !IsValid( ent ) or ent:IsOnFire() then return 0.2 end
 
             local time = Clamp( 512 / self:GetRangeTo( ent ), 1, 16 )
@@ -158,9 +164,10 @@ local ForcePowers = {
     },
     [ "Force Lightning" ] = {
         Cost = 3,
+        ConVar = CreateLambdaConvar( "lambdaplayers_weapons_lightsaber_allowlightning", 1, true, false, false, "If Lambda Players with lightsaber are allowed to use the Force Lightning power.", 0, 1, { type = "Bool", name = "Lightsaber - Allow Force Lightning", category = "Weapon Utilities" } ),
         Action = function( self, wepent )
             local foundents = 0
-            for _, ent in ipairs( SelectTargets( self, 3 ) ) do
+            for _, ent in ipairs( SelectTargets( self, wepent, 3 ) ) do
                 foundents = ( foundents + 1 )
 
                 local effectData = EffectData()
@@ -195,6 +202,29 @@ local ForcePowers = {
             end
 
             return 0.2, foundEnts
+        end
+    },
+    [ "Force Repulse" ] = {
+        ConVar = CreateLambdaConvar( "lambdaplayers_weapons_lightsaber_allowrepulse", 1, true, false, false, "If Lambda Players with lightsaber are allowed to use the Force Repulse power.", 0, 1, { type = "Bool", name = "Lightsaber - Allow Force Repulse", category = "Weapon Utilities" } ),
+        Action = function( self, wepent )
+            if !self.LS_ForceRepulse then
+                if self.LS_Force < 16 then return false end
+                self.LS_ForceRepulse = 1
+                self.LS_Force = ( self.LS_Force - 16 )
+            end
+            
+            if CurTime() >= self.LS_NextForceEffect then
+                local effectData = EffectData()
+                effectData:SetOrigin( self:GetPos() + vector_up * 36 )
+                effectData:SetRadius( 128 * self.LS_ForceRepulse )
+                util_Effect( "rb655_force_repulse_in", effectData, true, true )
+
+                self.LS_NextForceEffect = ( CurTime() + Clamp( self.LS_ForceRepulse / 20, 0.1, 0.5 ) )
+            end
+
+            self.LS_ForceRepulse = ( self.LS_ForceRepulse + 0.025 )
+            self.LS_Force = ( self.LS_Force - 0.5 )
+            return false
         end
     }
 }
@@ -265,9 +295,11 @@ table.Merge( _LAMBDAPLAYERSWEAPONS, {
             self:SetExternalVar( "LS_HolsterSound", holsterSnd )
 
             self.LS_HoldType = holdType
+            self.LS_IsHolstered = false
             self.LS_DmgAbsorbTime = 0
             self.LS_Force = ( self.LS_Force or 100 )
             self.LS_CurrentForce = false
+            self.LS_LastForceType = false
             self.LS_LastForce = self.LS_Force
             self.LS_NextForceUseTime = ( self.LS_NextForceUseTime or 0 )
             self.LS_NextForceRegenTime = ( self.LS_NextForceRegenTime or 0 )
@@ -275,6 +307,8 @@ table.Merge( _LAMBDAPLAYERSWEAPONS, {
             self.LS_RecentDamage = ( self.LS_RecentDamage or 0 )
             self.LS_RecentDmgResetTime = ( self.LS_RecentDmgResetTime or CurTime() )
             self.LS_AgitatedTime = ( CurTime() + random( 5, 15 ) )
+            self.LS_NextForceEffect = 0
+            self.LS_ForceRepulse = false
 
             self:SetNW2Float( "LS_LengthAnimation", 0 )
 
@@ -299,6 +333,8 @@ table.Merge( _LAMBDAPLAYERSWEAPONS, {
                 return true
             end
             
+            --
+
             if CurTime() < self.LS_DmgAbsorbTime then
                 local force = self.LS_Force
                 if force < 1 then return end
@@ -313,25 +349,32 @@ table.Merge( _LAMBDAPLAYERSWEAPONS, {
                 end
             end
 
+            --
+
             self.LS_RecentDamage = ( self.LS_RecentDamage + dmginfo:GetDamage() )
             self.LS_RecentDmgResetTime = CurTime()
         end,
 
         OnThink = function( self, wepent, isDead )
-            if self:InCombat() or self:IsPanicking() then
+            local inCombat, isRetreating = self:InCombat(), self:IsPanicking()
+            if inCombat or isRetreating then
                 self.LS_AgitatedTime = ( CurTime() + random( 5, 15 ) )
             end
 
             local animMax = 1
             if CurTime() < self.LS_AgitatedTime then
-                if self.l_HoldType == "normal" then
+                if self.LS_IsHolstered then
+                    self.LS_IsHolstered = false
                     self.l_HoldType = self.LS_HoldType
                     wepent:EmitSound( self.LS_SwitchSound, nil, nil, 0.4 )
                 end
             else
-                if self.l_HoldType != "normal" then
-                    self.l_HoldType = "normal"
+                if !self.LS_IsHolstered then
+                    self.LS_IsHolstered = true
                     wepent:EmitSound( self.LS_HolsterSound, nil, nil, 0.4 )
+                end
+                if self.l_HoldType != "normal" and self:GetNW2Float( "LS_LengthAnimation", 0 ) == 0 then
+                    self.l_HoldType = "normal"
                 end
 
                 animMax = 0
@@ -363,26 +406,35 @@ table.Merge( _LAMBDAPLAYERSWEAPONS, {
             self.LS_LastForce = force
 
             local maxLength = self:GetNW2Int( "LS_MaxLength", 48 )
+            local forceType = self.LS_CurrentForce
+            local enemy = self:GetEnemy()
+
+            if inCombat and CurTime() < self.l_WeaponUseCooldown then
+                local targetPos = enemy:WorldSpaceCenter()
+                local faceAng = ( targetPos - self:WorldSpaceCenter() ):Angle()
+                self.Face = ( targetPos + faceAng:Right() * random( -30, 30 ) + faceAng:Up() * random( -25, 25 ) )
+                if !self.l_Faceend then self.l_Faceend = ( CurTime() + 0.1 ) end
+            end
 
             if force < 1 then
                 self.LS_NextForceUseTime = ( CurTime() + random( 5, 8 ) )
             elseif CurTime() >= self.LS_NextForceUseTime then
-                local enemy = self:GetEnemy()
-                local forceType = self.LS_CurrentForce
                 
                 if CurTime() >= self.LS_NextForceSwitchTime then
                     local newForce = false
                     if self:IsOnFire() then
                         newForce = "Force Heal"
-                    elseif self.LS_RecentDamage >= ( self:Health() / 4 ) and ( !self:InCombat() or !self:IsInRange( enemy, maxLength ) and self:CanSee( enemy ) ) or self:IsPanicking() and IsValid( enemy ) and self:IsInRange( enemy, 1500 ) and self:CanSee( enemy ) then
+                    elseif self.LS_RecentDamage >= ( self:Health() / 4 ) and ( !inCombat or !self:IsInRange( enemy, maxLength ) and self:CanSee( enemy ) ) or isRetreating and IsValid( enemy ) and self:IsInRange( enemy, 1500 ) and self:CanSee( enemy ) then
                         newForce = "Force Absorb"
-                    elseif ( self:InCombat() or self:IsPanicking() and IsValid( enemy ) ) and random( 1, 20 ) > 5 and self:CanSee( enemy ) and !self:IsInRange( enemy, 256 ) then
-                        local rndAttack = random( 5000 )
+                    elseif ( inCombat or isRetreating and IsValid( enemy ) ) and random( 1, 20 ) > 5 and self:CanSee( enemy ) then
+                        local rndAttack = random( 6000 )
                         if rndAttack <= 1250 and self:IsInRange( enemy, 512 ) then
                             newForce = "Force Combust"
                         elseif rndAttack <= 3000 and self:IsInRange( enemy, 512 ) then
                             newForce = "Force Lightning"
-                        elseif !self:IsPanicking() and self:IsInRange( enemy, 1024 ) and ( random( 100 ) == 1 or !self:IsInRange( enemy, 512 ) ) then
+                        elseif rndAttack >= 5000 and self:IsInRange( enemy, 384 ) then
+                            newForce = "Force Repulse"
+                        elseif !isRetreating and self:IsInRange( enemy, 1024 ) and ( random( 100 ) == 1 or !self:IsInRange( enemy, 512 ) ) then
                             newForce = "Force Leap"
                         end
                     elseif self:Health() < self:GetMaxHealth() then
@@ -397,7 +449,7 @@ table.Merge( _LAMBDAPLAYERSWEAPONS, {
                 end
 
                 local forceInfo = ForcePowers[ forceType ]
-                if forceInfo and ( !IsValid( enemy ) or !self:IsInRange( enemy, maxLength + 10 ) ) then
+                if forceInfo and ( !IsValid( enemy ) or !self:IsInRange( enemy, maxLength + 10 ) ) and forceInfo.ConVar:GetBool() then
                     local infoCost = forceInfo.Cost
                     if !infoCost or force >= infoCost then 
                         local cooldown, cost = forceInfo.Action( self, wepent, enemy )
@@ -416,6 +468,74 @@ table.Merge( _LAMBDAPLAYERSWEAPONS, {
                     end
                 end
             end
+
+            local repulseForce = self.LS_ForceRepulse
+            local lastForceType = self.LS_LastForceType
+            if repulseForce and forceType != lastForceType and lastForceType == "Force Repulse" then
+                local selfPos = self:GetPos()
+                local maxDist = ( 128 * repulseForce )
+                
+                for _, ent in ipairs( FindInSphere( selfPos, maxDist ) ) do
+                    if ent == self or ent == wepent then continue end
+                    if ( ent:IsNPC() or ent:IsPlayer() or ent:IsNextBot() ) and !self:CanTarget( ent ) then continue end
+
+                    local dist = self:GetRangeTo( ent )
+                    local mul = ( ( maxDist - dist ) / 256 )
+                    local dir = ( ( selfPos - ent:GetPos() ):GetNormalized() * mul )
+                    dir.z = 64
+
+                    if ( ent:IsNPC() or ent:IsNextBot() ) && IsValidRagdoll( ent:GetModel() or "" ) then
+                        local dmginfo = DamageInfo()
+                        dmginfo:SetDamagePosition( ent:WorldSpaceCenter() )
+                        dmginfo:SetDamage( 48 * mul )
+                        dmginfo:SetDamageType( DMG_GENERIC )
+                        if ( 1 - dist / maxDist ) > 0.8 then
+                            dmginfo:SetDamageType( DMG_DISSOLVE )
+                            dmginfo:SetDamage( ent:Health() * 3 )
+                        end
+                        dmginfo:SetDamageForce( -dir * min( mul * 40000, 80000 ) )
+                        dmginfo:SetInflictor( self )
+                        dmginfo:SetAttacker( self )
+                        ent:TakeDamageInfo( dmginfo )
+
+                        local vel = ( dir * ( ent:IsOnGround() and -2048 or -1024 ) )
+                        if ent:IsNextBot() then
+                            ent.loco:Jump()
+                            ent.loco:SetVelocity( vel )
+                        else
+                            ent:SetVelocity( vel )
+                        end
+                    elseif ent:IsPlayer() then 
+                        ent:SetVelocity( dir * ( ent:IsOnGround() and -2048 or -384 ) )
+                    else
+                        local physCount = ent:GetPhysicsObjectCount()
+                        if physCount > 0 then
+                            for i = 0, ( physCount - 1 ) do
+                                local phys = ent:GetPhysicsObjectNum( i )
+                                if IsValid( phys ) then phys:ApplyForceCenter( dir * -512 * min( ent:GetPhysicsObject():GetMass(), 256 ) ) end
+                            end
+                        end
+                    end
+                end
+                
+                local effectData = EffectData()
+                effectData:SetOrigin( selfPos + vector_up * 36 )
+                effectData:SetRadius( maxDist )
+                util_Effect( "rb655_force_repulse_out", effectData, true, true )
+
+                self.LS_ForceRepulse = false
+                wepent:EmitSound( "lightsaber/force_repulse.wav" )
+
+                self.LS_NextForceUseTime = ( CurTime() + 1 )
+                if CurTime() >= self.l_WeaponUseCooldown then
+                    self.l_WeaponUseCooldown = ( CurTime() + 1 )
+                else
+                    self.l_WeaponUseCooldown = ( self.l_WeaponUseCooldown + 1 )
+                end
+            end
+            self.LS_LastForceType = forceType
+
+            --
 
             local bladeLength = ( lengthAnim * maxLength )
             if bladeLength <= 0 then return end
@@ -471,6 +591,8 @@ table.Merge( _LAMBDAPLAYERSWEAPONS, {
                     end
                 end
             end
+
+            --
 
             if wepent.LS_SoundHit then
                 wepent.LS_SoundHit:ChangeVolume( ( isTracesHit and 0.1 or 0 ), 0 )
@@ -538,11 +660,6 @@ table.Merge( _LAMBDAPLAYERSWEAPONS, {
             self:RemoveGesture( anim )
             self:AddGesture( anim )
 
-            local targetPos = target:WorldSpaceCenter()
-            local faceAng = ( targetPos - self:WorldSpaceCenter() ):Angle()
-            self.Face = ( targetPos + faceAng:Right() * random( -20, 20 ) + faceAng:Up() * random( -15, 15 ) )
-            if !self.l_Faceend then self.l_Faceend = ( CurTime() + 0.1 ) end
-
             self.l_WeaponUseCooldown = ( CurTime() + 0.5 )
             self.LS_AgitatedTime = ( CurTime() + random( 5, 15 ) )
             return true
@@ -558,6 +675,7 @@ table.Merge( _LAMBDAPLAYERSWEAPONS, {
             self.LS_NextForceSwitchTime = 0
             self.LS_RecentDamage = 0
             self.LS_RecentDmgResetTime = CurTime()
+            self.LS_ForceRepulse = false
 
             self:SetNW2Float( "LS_LengthAnimation", 0 )
         end,
